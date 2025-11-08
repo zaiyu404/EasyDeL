@@ -331,19 +331,13 @@ class GRPOTrainer(Trainer):
 
         empty_sharding = NamedSharding(spec=PartitionSpec(), mesh=mesh)
 
-        @ejit(
-            in_shardings=(
-                self.model_state.shardings.graphdef,
-                self.model_state.shardings.graphstate,
-                self.model_state.shardings.graphother,
-                empty_sharding,
-                empty_sharding,
-            ),
-            out_shardings=(empty_sharding, empty_sharding, empty_sharding),
-        )
-        def generate(graphdef, graphstate, graphother, input_ids, attention_mask):
-            # Merge components inside JIT function to ensure proper LoRA state handling
-            module = flax.nnx.merge(graphdef, graphstate, graphother)
+        # Note: We do NOT use @ejit here to avoid issues with LoRA state tracking
+        # in nested JIT contexts (generate -> _sample -> while_loop with closures).
+        # The while_loop inside module.generate() will still be JIT-compiled (trace=True).
+        # This ensures LoRA layers maintain correct state throughout multi-token generation.
+        def generate(state: EasyDeLState, input_ids, attention_mask):
+            # Access model through state property to get properly merged module
+            module = state.model
 
             with module.mesh:
                 input_ids = module.config.partition_manager.shard(
@@ -466,13 +460,7 @@ class GRPOTrainer(Trainer):
 
             with capture_time() as generation_time_fn:
                 sequences, prompt_ids, prompt_mask = jax.block_until_ready(
-                    self.generate_function(
-                        state.graphdef,
-                        state.graphstate,
-                        state.graphother,
-                        prompt_ids,
-                        prompt_mask,
-                    )
+                    self.generate_function(state, prompt_ids, prompt_mask)
                 )
             generation_time = generation_time_fn()
             prompt_completion_ids = sequences
