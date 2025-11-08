@@ -249,7 +249,22 @@ class GRPOTrainer(Trainer):
             if isinstance(conf_eos, int):
                 conf_eos = [conf_eos]
             eos_ids = eos_ids + conf_eos
-        return list(set(eos_ids))
+
+        eos_ids = list(set(eos_ids))
+
+        # CRITICAL FIX: Remove pad_token_id from eos_token_id list
+        # If pad_token appears in eos list, sampling pad_token would trigger
+        # premature termination (is_sent_finished=True), causing all subsequent
+        # tokens to become pad_token (often 0). This is especially problematic
+        # when LoRA fails and sampling produces pad_token.
+        if self.pad_token_id is not None and self.pad_token_id in eos_ids:
+            logger.warning(
+                f"Removing pad_token_id ({self.pad_token_id}) from eos_token_id list "
+                f"to prevent premature generation termination."
+            )
+            eos_ids.remove(self.pad_token_id)
+
+        return eos_ids
 
     def _prepare_dataset(
         self,
